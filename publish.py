@@ -249,16 +249,16 @@ def generate_image(prompt: str) -> bytes | None:
         payload = {
             "input": {
                 "prompt": prompt,
-                "aspect_ratio": "16:9",
-                "output_format": "jpg",
-                "output_quality": 85,
-                "num_outputs": 1,
+                "aspect_ratio": "3:2",
+                "output_format": "jpeg",
+                "number_of_images": 1,
+                "quality": "high",
             }
         }
 
         for attempt in range(3):
             resp = requests.post(
-                "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
+                "https://api.replicate.com/v1/models/openai/gpt-image-2/predictions",
                 headers=headers,
                 json=payload,
                 timeout=60
@@ -427,7 +427,7 @@ def main():
                 featured_media_id = result["id"]
 
     # 5. Generuj obrazek do treści
-    time.sleep(5)
+    time.sleep(15)
     print("🎨 Generuję obrazek do treści...")
     img1_bytes = generate_image(post_data["image_prompt_1"]) if post_data["image_prompt_1"] else None
     if img1_bytes:
