@@ -240,32 +240,34 @@ IMAGE_ALT_1: [opis alt po polsku dla zdjęcia w treści, max 10 słów, zawiera 
 
 def generate_image(prompt: str) -> bytes | None:
     prompt = prompt + ", hyperrealistic, professional architectural photography, 4k, no illustrations"
-    try:
-        headers = {
-            "Authorization": f"Bearer {REPLICATE_API_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "wait"
+    headers = {
+        "Authorization": f"Bearer {REPLICATE_API_KEY}",
+        "Content-Type": "application/json",
+        # BEZ "Prefer: wait" — POST ma tylko utworzyć prediction i wrócić od razu
+    }
+    payload = {
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": "3:2",
+            "output_format": "jpeg",
+            "number_of_images": 1,
+            "quality": "high",
         }
-        payload = {
-            "input": {
-                "prompt": prompt,
-                "aspect_ratio": "3:2",
-                "output_format": "jpeg",
-                "number_of_images": 1,
-                "quality": "high",
-            }
-        }
+    }
 
+    try:
+        # ── 1. Utwórz prediction (krótki timeout — nie czekamy tu na generację) ──
+        prediction = None
         for attempt in range(3):
             resp = requests.post(
                 "https://api.replicate.com/v1/models/openai/gpt-image-2/predictions",
                 headers=headers,
                 json=payload,
-                timeout=60
+                timeout=20,
             )
 
             if resp.status_code == 429:
-                retry_after = resp.json().get("retry_after", 15)
+                retry_after = int(resp.headers.get("retry-after", 15))  # 429 daje to w HEADERZE, nie w JSON
                 print(f"⏳ Rate limit — czekam {retry_after}s... (próba {attempt + 1}/3)")
                 time.sleep(retry_after + 3)
                 continue
@@ -273,29 +275,36 @@ def generate_image(prompt: str) -> bytes | None:
             if not resp.ok:
                 print(f"⚠️  Replicate błąd {resp.status_code}: {resp.text[:300]}")
                 return None
+
+            prediction = resp.json()
             break
         else:
             print("⚠️  Rate limit — nie udało się po 3 próbach")
             return None
 
-        data = resp.json()
-
-        for _ in range(30):
-            if data.get("status") in ("succeeded", "failed"):
-                break
-            time.sleep(3)
-            poll = requests.get(
-                f"https://api.replicate.com/v1/predictions/{data['id']}",
-                headers=headers,
-                timeout=15
-            )
-            data = poll.json()
-
-        if data.get("status") != "succeeded":
-            print(f"⚠️  Replicate nie wygenerował obrazka: {data.get('status')}")
+        if not prediction:
             return None
 
-        output = data["output"]
+        # ── 2. Polling aż do stanu terminalnego (budżet ~300s) ──
+        get_url = prediction.get("urls", {}).get("get") or \
+                  f"https://api.replicate.com/v1/predictions/{prediction['id']}"
+
+        max_wait, poll_interval, elapsed = 300, 5, 0
+        while prediction.get("status") not in ("succeeded", "failed", "canceled"):
+            if elapsed >= max_wait:
+                print(f"⚠️  Timeout pollingu po {max_wait}s (status: {prediction.get('status')})")
+                return None
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            poll = requests.get(get_url, headers=headers, timeout=20)
+            prediction = poll.json()
+
+        if prediction.get("status") != "succeeded":
+            print(f"⚠️  Replicate {prediction.get('status')}: {prediction.get('error')}")
+            return None
+
+        # ── 3. Pobierz obrazek ──
+        output = prediction["output"]
         image_url = output if isinstance(output, str) else output[0]
         print(f"✅ Obrazek wygenerowany: {image_url}")
 
@@ -308,7 +317,6 @@ def generate_image(prompt: str) -> bytes | None:
     except Exception as e:
         print(f"⚠️  Błąd generowania obrazka: {e}")
         return None
-
 
 def upload_image_to_wp(image_bytes: bytes, filename: str) -> dict | None:
     try:
